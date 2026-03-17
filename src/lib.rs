@@ -1,3 +1,4 @@
+pub mod definition;
 pub mod eval;
 pub mod functions;
 #[cfg(feature = "jit")]
