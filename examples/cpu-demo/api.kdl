@@ -1,0 +1,6 @@
+function "cpu_tick" {
+    input "key_input" cell="F2" type="f64"
+    input "reset" cell="L2" type="bool"
+    output "framebuffer" cells="B95:Q110" type="[u8; 256]"
+    ticks 1
+}

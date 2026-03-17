@@ -1,0 +1,114 @@
+;scrolling diagonal gradient — fills all 256 pixels per frame
+;color = (pixel + frame) mod 256, C renderer handles % 64
+
+FRAME = $01
+PIX = $02
+
+INIT:
+	LDI #00
+	PUSH
+	LDI FRAME
+	STR
+
+NEWFRAME:
+	LDI #00
+	PUSH
+	LDI PIX
+	STR
+
+	LDI #06
+	PUSH
+	LDI #00
+	STR
+
+LOOP_P6:
+	LDI FRAME
+	PUSH
+	LDR
+	PUSH
+	LDI PIX
+	PUSH
+	LDR
+	CLC
+	ADD
+	PUSH
+
+	LDI PIX
+	PUSH
+	LDR
+	PUSH
+	LDI #128
+	CLC
+	ADD
+	STR
+
+	LDI PIX
+	PUSH
+	LDR
+	PUSH
+	LDI #01
+	CLC
+	ADD
+	PUSH
+	PUSH
+	LDI PIX
+	STR
+	POP
+	CMP #128
+	BGE PAGE7
+	SEC
+	BGE LOOP_P6
+
+PAGE7:
+	LDI #07
+	PUSH
+	LDI #00
+	STR
+
+LOOP_P7:
+	LDI FRAME
+	PUSH
+	LDR
+	PUSH
+	LDI PIX
+	PUSH
+	LDR
+	CLC
+	ADD
+	PUSH
+
+	LDI PIX
+	PUSH
+	LDR
+	STR
+
+	LDI PIX
+	PUSH
+	LDR
+	PUSH
+	LDI #01
+	CLC
+	ADD
+	PUSH
+	PUSH
+	LDI PIX
+	STR
+	POP
+	CMP #00
+	BGE ENDFRAME
+	SEC
+	BGE LOOP_P7
+
+ENDFRAME:
+	LDI FRAME
+	PUSH
+	LDR
+	PUSH
+	LDI #01
+	CLC
+	ADD
+	PUSH
+	LDI FRAME
+	STR
+	SEC
+	BGE NEWFRAME
