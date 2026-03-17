@@ -9,7 +9,7 @@ quick-xml = "0.39.2"
 zip = "8.2.0"
 
 [workspace]
-members = [".", "crates/viewer"]
+members = [".", "crates/viewer", "crates/compiler"]
 
 [features]
 jit = ["dep:inkwell"]
