@@ -1,11 +1,14 @@
 use std::fmt;
+use std::path::Path;
+use std::process::Command;
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::types::{ArrayType, FloatType, IntType, StructType};
 use inkwell::values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue};
-use inkwell::FloatPredicate;
+use inkwell::{FloatPredicate, OptimizationLevel};
 
 use crate::codegen;
 use crate::definition::{ApiScalar, ApiType, Definition, FunctionDef};
@@ -514,5 +517,205 @@ impl<'ctx> AotEmitter<'ctx> {
 
         self.builder.build_return(Some(&ret)).unwrap();
         Ok(function)
+    }
+}
+
+fn c_type_name(t: ApiScalar) -> &'static str {
+    match t {
+        ApiScalar::F64 => "double",
+        ApiScalar::Bool => "bool",
+        ApiScalar::U8 => "uint8_t",
+        ApiScalar::I32 => "int32_t",
+        ApiScalar::U32 => "uint32_t",
+        ApiScalar::I64 => "int64_t",
+        ApiScalar::U64 => "uint64_t",
+    }
+}
+
+fn c_param_type(t: &ApiType) -> String {
+    match t {
+        ApiType::F64 => "double".into(),
+        ApiType::Bool => "bool".into(),
+        ApiType::U8 => "uint8_t".into(),
+        ApiType::I32 => "int32_t".into(),
+        ApiType::U32 => "uint32_t".into(),
+        ApiType::I64 => "int64_t".into(),
+        ApiType::U64 => "uint64_t".into(),
+        ApiType::Array(_, _) => unreachable!("arrays not used as input params"),
+    }
+}
+
+fn sanitize_c_name(name: &str) -> String {
+    const RESERVED: &[&str] = &[
+        "char", "int", "long", "short", "float", "double", "void", "return",
+        "if", "else", "for", "while", "do", "switch", "case", "break",
+        "continue", "struct", "union", "enum", "typedef", "const", "static",
+        "extern", "register", "volatile", "signed", "unsigned", "default",
+        "goto", "sizeof",
+    ];
+    if RESERVED.contains(&name) { format!("{}_", name) } else { name.to_string() }
+}
+
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().chain(c).collect(),
+            }
+        })
+        .collect()
+}
+
+fn generate_header_string(def: &Definition) -> String {
+    let mut h = String::new();
+    h.push_str("#pragma once\n\n");
+    h.push_str("#include <stdint.h>\n");
+    h.push_str("#include <stdbool.h>\n\n");
+    h.push_str("typedef struct SpreadsheetState SpreadsheetState;\n\n");
+    h.push_str("SpreadsheetState* spreadsheet_init(void);\n");
+    h.push_str("void spreadsheet_free(SpreadsheetState* state);\n\n");
+
+    for func in &def.functions {
+        let needs_struct = func.outputs.len() > 1
+            || func.outputs.iter().any(|o| matches!(o.api_type, ApiType::Array(_, _)));
+        let struct_name = format!("{}Output", to_pascal_case(&func.name));
+
+        if needs_struct {
+            h.push_str("typedef struct {\n");
+            for out in &func.outputs {
+                match out.api_type {
+                    ApiType::Array(scalar, len) => {
+                        h.push_str(&format!("    {} {}[{}];\n",
+                            c_type_name(scalar), out.name, len));
+                    }
+                    _ => {
+                        h.push_str(&format!("    {} {};\n",
+                            c_param_type(&out.api_type), out.name));
+                    }
+                }
+            }
+            h.push_str(&format!("}} {};\n\n", struct_name));
+        }
+
+        let return_type = if needs_struct {
+            struct_name.clone()
+        } else if func.outputs.len() == 1 {
+            c_param_type(&func.outputs[0].api_type)
+        } else {
+            "void".into()
+        };
+
+        let params: Vec<String> = std::iter::once("SpreadsheetState* state".into())
+            .chain(func.inputs.iter().map(|inp| {
+                format!("{} {}", c_param_type(&inp.api_type), sanitize_c_name(&inp.name))
+            }))
+            .collect();
+
+        h.push_str(&format!("{} {}({});\n\n", return_type, func.name, params.join(", ")));
+    }
+    h
+}
+
+fn link_shared_library(obj_path: &Path, output_path: &Path) -> Result<(), AotError> {
+    let output = Command::new("cc")
+        .arg("-shared")
+        .arg("-o")
+        .arg(output_path)
+        .arg(obj_path)
+        .output()
+        .map_err(|e| AotError::LinkerError(format!("failed to invoke cc: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AotError::LinkerError(stderr.into()));
+    }
+    Ok(())
+}
+
+pub fn compile(
+    eval: &Evaluator,
+    def: &Definition,
+    output_path: &Path,
+    opt_level: u8,
+) -> Result<(), AotError> {
+    validate_definition(eval, def)?;
+
+    let context = Context::create();
+    let emitter = AotEmitter::new(&context, eval);
+
+    for func_def in &def.functions {
+        emitter.emit_function_wrapper(eval, func_def)?;
+    }
+
+    Target::initialize_native(&InitializationConfig::default())
+        .map_err(|e| AotError::LlvmError(e.to_string()))?;
+    let triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&triple)
+        .map_err(|e| AotError::LlvmError(e.to_string()))?;
+    let level = match opt_level {
+        0 => OptimizationLevel::None,
+        1 => OptimizationLevel::Less,
+        3 => OptimizationLevel::Aggressive,
+        _ => OptimizationLevel::Default,
+    };
+    let machine = target
+        .create_target_machine(
+            &triple,
+            "generic",
+            "",
+            level,
+            RelocMode::PIC,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| AotError::LlvmError("failed to create target machine".into()))?;
+
+    let obj_path = output_path.with_extension("o");
+    machine
+        .write_to_file(&emitter.module, FileType::Object, &obj_path)
+        .map_err(|e| AotError::LlvmError(e.to_string()))?;
+
+    link_shared_library(&obj_path, output_path)?;
+
+    let header_path = output_path.with_extension("h");
+    let header = generate_header_string(def);
+    std::fs::write(&header_path, header)
+        .map_err(|e| AotError::LlvmError(e.to_string()))?;
+
+    let _ = std::fs::remove_file(&obj_path);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::definition::*;
+
+    #[test]
+    fn header_single_function() {
+        let def = Definition {
+            functions: vec![FunctionDef {
+                name: "char_to_binary".into(),
+                inputs: vec![ParamDef {
+                    name: "char".into(),
+                    cells: vec![("A".into(), 1)],
+                    api_type: ApiType::U8,
+                }],
+                outputs: vec![ParamDef {
+                    name: "bits".into(),
+                    cells: (2..=9).map(|r| ("A".into(), r)).collect(),
+                    api_type: ApiType::Array(ApiScalar::Bool, 8),
+                }],
+                ticks: 1,
+            }],
+        };
+        let header = generate_header_string(&def);
+        assert!(header.contains("SpreadsheetState* spreadsheet_init(void)"));
+        assert!(header.contains("void spreadsheet_free(SpreadsheetState* state)"));
+        assert!(header.contains("typedef struct {"));
+        assert!(header.contains("bool bits[8]"));
+        assert!(header.contains("uint8_t char_"));
     }
 }
