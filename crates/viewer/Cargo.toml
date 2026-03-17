@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-excel-in = { path = "../.." }
+excel-in = { path = "../..", features = ["jit"] }
 minifb = "0.28.0"

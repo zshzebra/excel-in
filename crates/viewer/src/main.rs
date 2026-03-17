@@ -6,8 +6,6 @@ use std::time::{Duration, Instant};
 const SCALE: usize = 20;
 const WIDTH: usize = 16 * SCALE;
 const HEIGHT: usize = 16 * SCALE;
-const TICKS_PER_FRAME: u64 = 16;
-
 const BLOCK6_ROW: u32 = 95;
 const COLS: [&str; 16] = ["B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q"];
 
@@ -57,17 +55,28 @@ fn render(fb: &[u8; 256], buffer: &mut [u32]) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: excel-in-viewer <file.xlsx>");
+        eprintln!("usage: excel-in-viewer <file.xlsx> [-O0|-O1|-O2|-O3]");
         std::process::exit(1);
     }
 
     let path = Path::new(&args[1]);
     let mut eval = excel_in::load_spreadsheet(path)?;
 
+    let jit_opt: Option<u8> = args.iter()
+        .find(|a| a.starts_with("-O"))
+        .and_then(|a| a[2..].parse().ok());
+
+    if let Some(level) = jit_opt {
+        eprintln!("compiling JIT (-O{})...", level);
+        let t = Instant::now();
+        eval.compile_jit(level);
+        eprintln!("JIT compiled in {:?}", t.elapsed());
+    }
+
     eval.set_value(CellId::local("F".into(), 2), 0.0);
     eval.set_value(CellId::local("L".into(), 2), 1.0);
     for _ in 0..10 {
-        eval.tick();
+        if jit_opt.is_some() { eval.jit_tick(); } else { eval.tick(); }
     }
     eval.set_value(CellId::local("L".into(), 2), 0.0);
 
@@ -76,22 +85,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         WIDTH, HEIGHT,
         WindowOptions::default(),
     )?;
-    window.set_target_fps(60);
 
     let mut buffer = vec![0u32; WIDTH * HEIGHT];
     let mut tick_count: u64 = 0;
     let start = Instant::now();
     let mut last_log = Instant::now();
+    let mut last_render = Instant::now();
+    let frame_interval = Duration::from_secs_f64(1.0 / 60.0);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        for _ in 0..TICKS_PER_FRAME {
-            eval.tick();
-            tick_count += 1;
-        }
+        if jit_opt.is_some() { eval.jit_tick(); } else { eval.tick(); }
+        tick_count += 1;
 
-        let fb = read_framebuffer(&eval);
-        render(&fb, &mut buffer);
-        window.update_with_buffer(&buffer, WIDTH, HEIGHT)?;
+        if last_render.elapsed() >= frame_interval {
+            let fb = read_framebuffer(&eval);
+            render(&fb, &mut buffer);
+            window.update_with_buffer(&buffer, WIDTH, HEIGHT)?;
+            last_render = Instant::now();
+        }
 
         if last_log.elapsed() > Duration::from_secs(5) {
             let elapsed = start.elapsed().as_secs_f64();

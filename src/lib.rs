@@ -1,5 +1,7 @@
 pub mod eval;
 pub mod functions;
+#[cfg(feature = "jit")]
+pub mod jit;
 pub mod parser;
 pub mod xlsx;
 

@@ -19,7 +19,7 @@ impl CellId {
     }
 }
 
-type Idx = u32;
+pub(crate) type Idx = u32;
 
 
 pub struct Evaluator {
@@ -28,10 +28,20 @@ pub struct Evaluator {
     formulas: Vec<(Idx, CompiledExpr)>,
     id_to_idx: HashMap<CellId, Idx>,
     idx_to_id: Vec<CellId>,
+    #[cfg(feature = "jit")]
+    jit_state: Option<JitState>,
+}
+
+#[cfg(feature = "jit")]
+struct JitState {
+    compiled: crate::jit::CompiledTick,
+    lookup_table: Vec<i32>,
+    lookup_cols: usize,
+    lookup_rows: usize,
 }
 
 #[derive(Debug)]
-enum CompiledExpr {
+pub(crate) enum CompiledExpr {
     Number(f64),
     CellRef(Idx),
     SelfRef,
@@ -42,7 +52,7 @@ enum CompiledExpr {
 }
 
 #[derive(Debug)]
-enum FnKind {
+pub(crate) enum FnKind {
     If,
     Mod,
     Not,
@@ -63,6 +73,8 @@ impl Evaluator {
             formulas: Vec::new(),
             id_to_idx: HashMap::new(),
             idx_to_id: Vec::new(),
+            #[cfg(feature = "jit")]
+            jit_state: None,
         }
     }
 
@@ -216,6 +228,66 @@ impl Evaluator {
             );
             self.values[idx] = val;
         }
+    }
+
+    #[cfg(feature = "jit")]
+    pub fn compile_jit(&mut self, opt_level: u8) {
+        let (table, cols, rows) = self.build_lookup_table();
+        let compiled = crate::jit::compile_tick(
+            &self.formulas,
+            self.values.len(),
+            &table,
+            cols,
+            rows,
+            opt_level,
+        );
+        self.jit_state = Some(JitState {
+            compiled,
+            lookup_table: table,
+            lookup_cols: cols,
+            lookup_rows: rows,
+        });
+    }
+
+    #[cfg(feature = "jit")]
+    pub fn jit_tick(&mut self) {
+        if self.jit_state.is_none() {
+            self.compile_jit(2);
+        }
+        self.prev_values.copy_from_slice(&self.values);
+        let state = self.jit_state.as_ref().unwrap();
+        unsafe {
+            state.compiled.call(
+                self.values.as_mut_ptr(),
+                self.prev_values.as_ptr(),
+                state.lookup_table.as_ptr(),
+                state.lookup_cols as i32,
+                state.lookup_rows as i32,
+            );
+        }
+    }
+
+    #[cfg(feature = "jit")]
+    fn build_lookup_table(&self) -> (Vec<i32>, usize, usize) {
+        let mut max_row: u32 = 0;
+        let mut max_col: u32 = 0;
+        for id in &self.idx_to_id {
+            if id.workbook.is_some() { continue; }
+            max_row = max_row.max(id.row);
+            max_col = max_col.max(col_str_to_num(&id.col));
+        }
+        let rows = max_row as usize;
+        let cols = max_col as usize;
+        let mut table = vec![-1i32; rows * cols];
+        for (id, &idx) in &self.id_to_idx {
+            if id.workbook.is_some() { continue; }
+            let r = id.row as usize;
+            let c = col_str_to_num(&id.col) as usize;
+            if r >= 1 && r <= rows && c >= 1 && c <= cols {
+                table[(r - 1) * cols + (c - 1)] = idx as i32;
+            }
+        }
+        (table, cols, rows)
     }
 }
 
