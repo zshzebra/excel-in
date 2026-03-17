@@ -115,6 +115,18 @@ impl Evaluator {
         self.id_to_idx.len()
     }
 
+    pub fn initial_values(&self) -> &[f64] {
+        &self.values
+    }
+
+    pub(crate) fn formulas(&self) -> &[(Idx, CompiledExpr)] {
+        &self.formulas
+    }
+
+    pub fn cell_index(&self, id: &CellId) -> Option<Idx> {
+        self.id_to_idx.get(id).copied()
+    }
+
     fn compile_expr(&mut self, expr: &Expr, self_idx: Idx) -> CompiledExpr {
         match expr {
             Expr::Number(n) => CompiledExpr::Number(*n),
@@ -267,8 +279,7 @@ impl Evaluator {
         }
     }
 
-    #[cfg(feature = "jit")]
-    fn build_lookup_table(&self) -> (Vec<i32>, usize, usize) {
+    pub(crate) fn build_lookup_table(&self) -> (Vec<i32>, usize, usize) {
         let mut max_row: u32 = 0;
         let mut max_col: u32 = 0;
         for id in &self.idx_to_id {
