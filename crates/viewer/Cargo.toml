@@ -1,0 +1,8 @@
+[package]
+name = "excel-in-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+excel-in = { path = "../.." }
+minifb = "0.28.0"

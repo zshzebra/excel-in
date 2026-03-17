@@ -1,0 +1,11 @@
+[package]
+name = "excel-in"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+quick-xml = "0.39.2"
+zip = "8.2.0"
+
+[workspace]
+members = [".", "crates/viewer"]
