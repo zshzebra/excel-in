@@ -5,6 +5,8 @@ pub mod functions;
 pub(crate) mod codegen;
 #[cfg(feature = "jit")]
 pub mod jit;
+#[cfg(feature = "jit")]
+pub mod aot;
 pub mod parser;
 pub mod xlsx;
 
